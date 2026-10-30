@@ -219,6 +219,7 @@ def run_config(user: BlogUser | None) -> dict[str, Any]:
     from langfuse.langchain import CallbackHandler
 
     return {
+        "run_name": "blog-chat",
         "callbacks": [CallbackHandler()],
         "metadata": {
             "langfuse_user_id": user.username if user else "anonymous",

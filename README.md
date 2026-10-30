@@ -39,7 +39,21 @@ Everyone else only sees public tools and aggregate counts — enforced both here
 | `RATE_LIMIT_PER_MINUTE` | `10` per client IP |
 | `MAX_CONCURRENT_CHATS` | `2` (others wait) |
 
-With Langfuse keys set, every chat is traced with the user (`anonymous` or username) and tags `blog-chat`, `public`/`admin`.
+With Langfuse keys set, every chat is traced as `blog-chat` with the user (`anonymous` or username) and tags
+`blog-chat`, `public`/`admin`: model calls (tokens, latency), tool calls with arguments and results.
+
+## Langfuse (self-hosted)
+[`langfuse/`](langfuse/) runs Langfuse v4 locally: the official compose file unchanged
+(`docker-compose.yml`) plus `docker-compose.override.yml` (UI on port **3001**, its Postgres not published, since
+the blog uses 3000/5432).
+
+```bash
+./langfuse/setup.sh                       # once: random secrets in langfuse/.env, keys written to ./.env
+docker compose -f langfuse/docker-compose.yml -f langfuse/docker-compose.override.yml --env-file langfuse/.env up -d
+cd ../blog-app && docker compose up -d --force-recreate agent   # pick up the keys
+open http://localhost:3001                # login printed by setup.sh (admin@inkwell.local)
+```
+Telemetry to Langfuse is disabled. Both `.env` files are git-ignored. Needs roughly 4–6 GB RAM.
 
 ## Reliability notes (qwen2.5:14b on Ollama)
 Measured issues with this model and the guards that handle them (`app/agent.py`):

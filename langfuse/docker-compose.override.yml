@@ -1,0 +1,8 @@
+# Local adjustments on top of the official Langfuse compose file (kept unmodified in docker-compose.yml):
+# - the blog already uses ports 3000 (web) and 5432 (Postgres)
+services:
+  langfuse-web:
+    ports: !override
+      - 3001:3000
+  postgres:
+    ports: !reset []
