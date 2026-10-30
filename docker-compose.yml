@@ -1,0 +1,18 @@
+# Chat agent. Normally started together with the rest of the stack from ../blog-app (docker compose up).
+# Ollama runs natively on the host (GPU/Metal is not available inside Docker on macOS).
+services:
+  agent:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      BLOG_API_URL: http://api:8000
+      MCP_URL: http://api:8000/mcp/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports: ["8001:8001"]

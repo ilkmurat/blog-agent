@@ -1,0 +1,103 @@
+openapi: 3.1.0
+info:
+  title: Inkwell Blog Agent API
+  version: 0.1.0
+  description: >
+    Chat assistant for the Inkwell blog. A LangChain agent on a local Ollama model answers questions using
+    the blog's MCP tools (blog-api /mcp/). Optional Langfuse tracing.
+servers:
+  - url: http://localhost:8001
+paths:
+  /agent/health:
+    get:
+      summary: Service and dependency health
+      operationId: health
+      responses:
+        "200":
+          description: Ollama and the MCP server are reachable
+          content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } }
+        "503":
+          description: A dependency is unavailable
+          content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } }
+  /agent/v1/chat:
+    post:
+      summary: Ask the assistant (streams the answer)
+      description: >
+        Stateless: send the conversation so far; the last message must be from the user.
+        Anyone may call this. With a blog bearer token, the assistant knows who is asking, and admins
+        additionally get admin-only tools (user details). Without a token only public tools are offered.
+
+        The response is a Server-Sent Events stream. Event types:
+        `tool_start` `{name, args}` – the assistant called a tool;
+        `tool_end` `{name, ok}` – the tool returned;
+        `token` `{text}` – a piece of the answer (concatenate in order);
+        `done` `{}` – the answer is complete;
+        `error` `{detail}` – the run failed (the stream ends after it).
+      operationId: chat
+      security: [{}, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ChatRequest" } } }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+              example: |
+                event: tool_start
+                data: {"name": "top_liked_posts", "args": {"limit": 1}}
+
+                event: tool_end
+                data: {"name": "top_liked_posts", "ok": true}
+
+                event: token
+                data: {"text": "En çok beğenilen yazı"}
+
+                event: done
+                data: {}
+        "401":
+          description: The bearer token is invalid or expired
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Invalid request (e.g. empty history, last message not from the user, too long)
+        "429":
+          description: Too many requests from this client; retry later
+          headers:
+            Retry-After: { schema: { type: integer } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Token from the blog API (/api/v1/auth/login)
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties: { detail: { type: string } }
+    Health:
+      type: object
+      required: [status, ollama, mcp, model, langfuse]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        ollama: { type: string, enum: [ok, error] }
+        mcp: { type: string, enum: [ok, error] }
+        model: { type: string }
+        langfuse: { type: string, enum: [enabled, disabled] }
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string, minLength: 1, maxLength: 4000 }
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: "#/components/schemas/ChatMessage" }
