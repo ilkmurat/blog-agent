@@ -132,6 +132,13 @@ def test_grounding_retries_answer_without_tools():
     assert requests[1].messages[-1].content == GROUNDING_NUDGE
 
 
+def test_grounding_keeps_original_answer_when_no_tool_applies():
+    # e.g. a visitor's HR question: "please log in" is right; the retry must not replace it.
+    original = AIMessage("Lütfen giriş yapın.")
+    final, requests = run_check([HumanMessage("Yıllık iznim kaç gün?")], original, AIMessage("OK"))
+    assert final is original and len(requests) == 2
+
+
 def test_grounding_accepts_tool_calls_and_answers_after_tools():
     call = AIMessage("", tool_calls=[CALL])
     final, requests = run_check([HumanMessage("q")], call)

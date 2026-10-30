@@ -7,8 +7,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:14b"
+    ollama_model: str = "qwen3:14b"
     ollama_num_ctx: int = 8192
+    # Thinking models (qwen3): False skips the reasoning phase for faster chat answers; None = model default.
+    ollama_reasoning: bool | None = False
     temperature: float = 0.2
 
     blog_api_url: str = "http://localhost:8000"

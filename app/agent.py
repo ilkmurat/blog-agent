@@ -22,8 +22,10 @@ from app.schemas import ChatMessage
 log = logging.getLogger(__name__)
 
 ADMIN_PREFIX = "admin_"
+MEMBER_PREFIX = "hr_"  # internal HR documents: logged-in users only
 
-SYSTEM_PROMPT = """You are the assistant of "Inkwell", a blog about web development, design, productivity and DevOps.
+SYSTEM_PROMPT = """You are the assistant of "Inkwell". You answer questions about (1) the Inkwell blog (web development,
+design, productivity, DevOps) and (2) for logged-in users, the company's internal HR documents.
 Today is {today}. You are talking to {who}.
 
 Rules:
@@ -31,10 +33,12 @@ Rules:
 - For any fact about the blog (posts, categories, tags, likes, users, numbers) call a tool first.
   Never invent posts, titles, links or numbers. If the tools return nothing, say so.
 - Earlier answers in this conversation are not a source of truth: call tools again for every new question.
-- Link posts with Markdown using the url field, e.g. [Title](/post/slug).
+- Link posts with Markdown using the url field, e.g. [Title](/post/slug). Never invent URLs: HR documents have no
+  links, so mention them by title only.
 - Keep answers short and well formatted; use bullet lists for several items.
 - User data: you may share aggregate counts (user_stats, site_stats) with anyone. {user_data_rule}
-- If a question is unrelated to the blog, answer briefly and steer back to the blog.{history}"""
+- HR questions (company policies, leave, working hours, benefits, expenses, procedures): {hr_rule}
+- If a question is unrelated to both the blog and HR, answer briefly and steer back.{history}"""
 
 HISTORY_BLOCK = """
 
@@ -57,6 +61,18 @@ def format_history(messages: Sequence[ChatMessage]) -> str:
     return HISTORY_BLOCK.format(turns="\n".join(lines))
 
 
+HR_RULE_MEMBER = (
+    "call hr_search with the question (keep the user's language) and answer ONLY from the returned passages. "
+    "Cite each fact as (Document title, s. page). If the passages do not answer the question, say that the HR "
+    "documents do not cover it. Never answer company HR policy from general knowledge. "
+    "Use hr_list_documents when asked which HR documents or topics exist."
+)
+HR_RULE_ANONYMOUS = (
+    "HR documents are only available to logged-in users. Do not answer HR policy questions; "
+    "ask the visitor to log in or sign up first."
+)
+
+
 def system_prompt(user: BlogUser | None, history: str = "") -> str:
     if user is None:
         who, rule = "an anonymous visitor", "Never reveal names, usernames or emails of users; you have no tool for that."
@@ -66,14 +82,22 @@ def system_prompt(user: BlogUser | None, history: str = "") -> str:
     else:
         who = f"{user.first_name or user.username}, a logged-in member"
         rule = "Never reveal names, usernames or emails of other users; you have no tool for that."
-    return SYSTEM_PROMPT.format(today=date.today().isoformat(), who=who, user_data_rule=rule, history=history)
+    hr_rule = HR_RULE_ANONYMOUS if user is None else HR_RULE_MEMBER
+    return SYSTEM_PROMPT.format(
+        today=date.today().isoformat(), who=who, user_data_rule=rule, hr_rule=hr_rule, history=history
+    )
 
 
 def visible_tools(tools: Sequence[BaseTool], user: BlogUser | None) -> list[BaseTool]:
-    """Admin tools are hidden from non-admins (the MCP server also enforces this)."""
-    if user is not None and user.is_admin:
-        return list(tools)
-    return [t for t in tools if not t.name.startswith(ADMIN_PREFIX)]
+    """Admin tools only for admins, HR tools only for logged-in users (the MCP server enforces this too)."""
+    def allowed(name: str) -> bool:
+        if name.startswith(ADMIN_PREFIX):
+            return user is not None and user.is_admin
+        if name.startswith(MEMBER_PREFIX):
+            return user is not None
+        return True
+
+    return [t for t in tools if allowed(t.name)]
 
 
 def to_langchain(messages: Sequence[ChatMessage]) -> list[BaseMessage]:
@@ -149,12 +173,15 @@ def degenerate(text: str, question: str) -> bool:
     return bool(_CJK.search(text)) and not _CJK.search(question)
 
 
-GARBLED_NUDGE = "Your last reply was garbled. Answer my last message again, only in my language, using the tools."
+GARBLED_NUDGE = (
+    "[system check] The previous draft was garbled. Write the answer to my original question again, in the same "
+    "language as that question, using the tools. Do not mention this check."
+)
 
 GROUNDING_NUDGE = (
-    "Check before answering: you have not called any tool for my last message. If it asks about the blog "
-    "(posts, categories, tags, likes, users or any numbers), call the right tool now instead of answering from memory. "
-    "If it needs no blog data (e.g. a greeting), give your answer again."
+    "[system check] No tool was called for my original question. If it concerns the blog (posts, categories, tags, "
+    "likes, users, numbers) or HR topics (leave, benefits, expenses, policies, procedures), call the matching tool "
+    "now. If no tool applies, reply with just: OK"
 )
 
 
@@ -170,10 +197,10 @@ def _question(messages: Sequence[BaseMessage]) -> str:
 
 
 class GroundingCheck(AgentMiddleware):
-    """Retries a model turn once when the answer is unusable:
-    - garbled output (CJK drift), or
-    - the first answer to a question used no tool (small models answer follow-ups from memory and invent posts).
-    The retried answer replaces the first one."""
+    """Retries a model turn once when the answer may be unusable:
+    - garbled output (CJK drift): the retried answer replaces it;
+    - the first answer to a question used no tool (small models answer follow-ups from memory and invent posts):
+      if the retry calls a tool it replaces the answer, otherwise the original answer stands (no tool applied)."""
 
     def _nudge(self, request: ModelRequest, response: ModelResponse) -> tuple[AIMessage, str] | None:
         answer = next((m for m in reversed(response.result) if isinstance(m, AIMessage)), None)
@@ -188,17 +215,24 @@ class GroundingCheck(AgentMiddleware):
     def _retry_request(self, request: ModelRequest, answer: AIMessage, nudge: str) -> ModelRequest:
         return request.override(messages=[*request.messages, answer, HumanMessage(nudge)])
 
+    @staticmethod
+    def _pick(original: ModelResponse, retried: ModelResponse, nudge: str) -> ModelResponse:
+        if nudge is GARBLED_NUDGE:
+            return retried
+        calls_tool = any(isinstance(m, AIMessage) and m.tool_calls for m in retried.result)
+        return retried if calls_tool else original
+
     def wrap_model_call(self, request, handler):
         response = handler(request)
         if (retry := self._nudge(request, response)) is not None:
-            response = handler(self._retry_request(request, *retry))
+            response = self._pick(response, handler(self._retry_request(request, *retry)), retry[1])
         return response
 
     async def awrap_model_call(self, request, handler):
         response = await handler(request)
         if (retry := self._nudge(request, response)) is not None:
             log.info("Retrying model turn: %s", "garbled" if retry[1] is GARBLED_NUDGE else "no tool used")
-            response = await handler(self._retry_request(request, *retry))
+            response = self._pick(response, await handler(self._retry_request(request, *retry)), retry[1])
         return response
 
 
@@ -209,6 +243,7 @@ def build_agent(tools: Sequence[BaseTool], user: BlogUser | None, history: str =
         base_url=settings.ollama_base_url,
         temperature=settings.temperature,
         num_ctx=settings.ollama_num_ctx,
+        reasoning=settings.ollama_reasoning,
     )
     return create_agent(model, tools, system_prompt=system_prompt(user, history), middleware=[GroundingCheck(), TextToolCallRepair()])
 

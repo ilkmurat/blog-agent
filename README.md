@@ -6,7 +6,7 @@ Chat assistant for the Inkwell blog. A **LangChain** agent running on a local **
 The UI is the `/chat` page of [blog-app](https://github.com/ilkmurat/blog-app).
 
 ```
-browser /chat ──SSE──► nginx /agent/ ──► blog-agent (FastAPI + LangChain) ──► Ollama (host, qwen2.5:14b)
+browser /chat ──SSE──► nginx /agent/ ──► blog-agent (FastAPI + LangChain) ──► Ollama (host, qwen3:14b)
                                               │                   └──────────► Langfuse (optional)
                                               └── MCP (streamable HTTP) ──► blog-api /mcp/ ──► Postgres, Qdrant
 ```
@@ -16,7 +16,7 @@ Ollama runs **on the host** (Docker on macOS has no GPU access):
 
 ```bash
 ollama serve &              # if not already running
-ollama pull qwen2.5:14b     # once
+ollama pull qwen3:14b       # once
 cd ../blog-app && docker compose up -d --build   # starts web, api, agent, postgres, qdrant
 open http://localhost:3000/chat
 ```
@@ -28,13 +28,19 @@ Contract: [`contract/openapi.yaml`](contract/openapi.yaml).
 
 `POST /agent/v1/chat` with `{"messages": [{"role": "user", "content": "..."}]}` (stateless; send the history,
 last message from the user, max 20). Responds with Server-Sent Events: `tool_start`, `tool_end`, `token`, `done`,
-`error`. An optional blog bearer token identifies the user; **admins** additionally get `admin_` tools (user details).
-Everyone else only sees public tools and aggregate counts — enforced both here and by the MCP server.
+`error`. An optional blog bearer token identifies the user. Tool access by role (enforced here and by the MCP server):
+
+| Caller | Tools |
+|---|---|
+| visitor | blog tools, aggregate counts; HR questions get "please log in" |
+| logged-in member | + `hr_search`, `hr_list_documents` (answers cite document and page) |
+| admin | + `admin_list_users` |
 
 ## Configuration (`.env`, see `.env.example`)
 | Variable | Default |
 |---|---|
-| `OLLAMA_MODEL` | `qwen2.5:14b` |
+| `OLLAMA_MODEL` | `qwen3:14b` |
+| `OLLAMA_REASONING` | `false` (qwen3 thinking off for faster answers) |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` | unset → tracing disabled |
 | `RATE_LIMIT_PER_MINUTE` | `10` per client IP |
 | `MAX_CONCURRENT_CHATS` | `2` (others wait) |
@@ -55,15 +61,16 @@ open http://localhost:3001                # login printed by setup.sh (admin@ink
 ```
 Telemetry to Langfuse is disabled. Both `.env` files are git-ignored. Needs roughly 4–6 GB RAM.
 
-## Reliability notes (qwen2.5:14b on Ollama)
+## Reliability notes (measured with qwen2.5:14b; guards stay on for qwen3)
 Measured issues with this model and the guards that handle them (`app/agent.py`):
 - **Tool calls written as plain JSON text** → `TextToolCallRepair` middleware turns them into real tool calls.
-- **Follow-up questions answered from memory (invented posts)** → `GroundingCheck` retries a first answer that used no tool.
+- **Follow-up questions answered from memory (invented posts)** → `GroundingCheck` asks once more when a first
+  answer used no tool; the retry is kept only if it calls a tool, otherwise the original answer stands.
 - **Drift into Chinese / repetition after tool calls in multi-turn chats** (reproducible with raw Ollama calls) →
   earlier turns are passed as context in the system prompt instead of chat messages (0/8 → 8/8 clean in tests);
   garbled answers are retried and a live stream is cut if it starts to degenerate.
 
-A stronger model (e.g. `qwen3:14b`) can be tried by changing `OLLAMA_MODEL`.
+Switching models is one setting (`OLLAMA_MODEL`).
 
 ## Tests
 ```bash

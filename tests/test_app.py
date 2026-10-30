@@ -124,17 +124,25 @@ def admin_list_users() -> str:
     return ""
 
 
-def test_admin_tools_only_for_admins():
-    tools = [site_stats, admin_list_users]
+@tool
+def hr_search() -> str:
+    """hr"""
+    return ""
+
+
+def test_tool_visibility_by_role():
+    tools = [site_stats, admin_list_users, hr_search]
     assert [t.name for t in agent.visible_tools(tools, None)] == ["site_stats"]
-    assert [t.name for t in agent.visible_tools(tools, MEMBER)] == ["site_stats"]
-    assert [t.name for t in agent.visible_tools(tools, ADMIN)] == ["site_stats", "admin_list_users"]
+    assert [t.name for t in agent.visible_tools(tools, MEMBER)] == ["site_stats", "hr_search"]
+    assert [t.name for t in agent.visible_tools(tools, ADMIN)] == ["site_stats", "admin_list_users", "hr_search"]
 
 
 def test_system_prompt_reflects_role():
     assert "anonymous visitor" in agent.system_prompt(None)
     assert "Ayşe, a logged-in member" in agent.system_prompt(MEMBER)
     assert "admin_ tools" in agent.system_prompt(ADMIN)
+    assert agent.HR_RULE_ANONYMOUS in agent.system_prompt(None)
+    assert agent.HR_RULE_MEMBER in agent.system_prompt(MEMBER) and agent.HR_RULE_MEMBER in agent.system_prompt(ADMIN)
 
 
 def test_only_latest_question_is_a_chat_message():
